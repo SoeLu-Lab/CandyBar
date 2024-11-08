@@ -1,0 +1,143 @@
+#include <Adafruit_NeoPixel.h>
+#include <WiFiManager.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Update.h>
+
+#define NUM_RINGS 48
+#define LEDS_PER_RING 12
+#define LED_PIN 6
+#define BUTTON_PIN 7
+#define OTA_URL "http://example.com/firmware.bin"  // URL zur neuen Firmware
+
+Adafruit_NeoPixel ring[NUM_RINGS];
+bool buttonPressed = false;
+bool updateRequested = false;
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 50;
+
+// Farben und Helligkeit
+uint32_t baseColor = Adafruit_NeoPixel::Color(50, 50, 50);  // Grundfarbe mit 20% Helligkeit
+float baseBrightness = 0.2;  // 20% Helligkeit
+
+void setup() {
+  Serial.begin(115200);
+
+  // Setup für Knopf
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // NeoPixel-Ringe initialisieren
+  for (int i = 0; i < NUM_RINGS; i++) {
+    ring[i] = Adafruit_NeoPixel(LEDS_PER_RING, LED_PIN + i, NEO_GRB + NEO_KHZ800);
+    ring[i].begin();
+    setRingColor(i, baseColor, baseBrightness);
+  }
+
+  // WiFiManager starten
+  WiFiManager wifiManager;
+  if (!wifiManager.autoConnect("ESP32-Setup")) {
+    Serial.println("Verbindung fehlgeschlagen und Reset erforderlich.");
+    ESP.restart();
+  }
+  Serial.println("Mit WLAN verbunden!");
+}
+
+void loop() {
+  // Knopf-Entprellung und Update-Anfrage
+  if (digitalRead(BUTTON_PIN) == LOW && (millis() - lastDebounceTime > debounceDelay)) {
+    buttonPressed = !buttonPressed;
+    lastDebounceTime = millis();
+
+    if (buttonPressed) {
+      updateRequested = true;
+    }
+  }
+
+  // Prüfen, ob Update angefordert wurde
+  if (updateRequested) {
+    performOTAUpdate();
+    updateRequested = false;
+  } else if (buttonPressed) {
+    // Animation starten
+    randomRingAnimation();
+    buttonPressed = false;
+  }
+}
+
+void setRingColor(int ringIndex, uint32_t color, float brightness) {
+  for (int i = 0; i < LEDS_PER_RING; i++) {
+    ring[ringIndex].setPixelColor(i, color);
+  }
+  ring[ringIndex].show();
+}
+
+void randomRingAnimation() {
+  uint32_t color = randomColor();
+  int order[NUM_RINGS];
+  for (int i = 0; i < NUM_RINGS; i++) order[i] = i;
+  for (int i = NUM_RINGS - 1; i > 0; i--) {
+    int j = random(0, i + 1);
+    int temp = order[i];
+    order[i] = order[j];
+    order[j] = temp;
+  }
+
+  for (int i = 0; i < NUM_RINGS; i++) {
+    int ringIndex = order[i];
+    setRingColor(ringIndex, color, 1.0);
+    delay(100 + i * 50);
+    if (i > 0) {
+      setRingColor(order[i - 1], baseColor, baseBrightness);
+    }
+  }
+
+  int finalRing = order[random(0, NUM_RINGS)];
+  setRingColor(finalRing, color, 1.0);
+  delay(10000);
+  
+  // Grundzustand wiederherstellen
+  for (int i = 0; i < NUM_RINGS; i++) {
+    setRingColor(i, baseColor, baseBrightness);
+  }
+}
+
+void performOTAUpdate() {
+  Serial.println("Starting OTA Update...");
+  
+  WiFiClient client;
+  HTTPClient http;
+  http.begin(client, OTA_URL);
+  int httpCode = http.GET();
+
+  if (httpCode == HTTP_CODE_OK) {
+    int contentLength = http.getSize();
+    bool canBegin = Update.begin(contentLength);
+
+    if (canBegin) {
+      WiFiClient *stream = http.getStreamPtr();
+      size_t written = Update.writeStream(*stream);
+      if (written == contentLength) {
+        Serial.println("Update erfolgreich geschrieben");
+      } else {
+        Serial.println("Update fehlgeschlagen: geschrieben nur " + String(written) + "/" + String(contentLength));
+      }
+
+      if (Update.end() && Update.isFinished()) {
+        Serial.println("OTA erfolgreich abgeschlossen. Neustart...");
+        ESP.restart();
+      } else {
+        Serial.println("Fehler beim Beenden des Updates. Fehlernummer: " + String(Update.getError()));
+      }
+    } else {
+      Serial.println("Nicht genügend Speicherplatz für OTA");
+    }
+  } else {
+    Serial.println("Kann Firmware nicht herunterladen. HTTP Fehler: " + String(httpCode));
+  }
+
+  http.end();
+}
+
+uint32_t randomColor() {
+  return Adafruit_NeoPixel::Color(random(0, 256), random(0, 256), random(0, 256));
+}
